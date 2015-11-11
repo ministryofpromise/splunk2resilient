@@ -943,7 +943,7 @@ class EventPusher:
             #Does the file already exists?
             if err.errno == errno.EEXIST:
                 self.log.info('Unable to aquire lock, existing lock in place')
-                #We are going to double check the locks timestamp is not over 60 seconds from current epoch
+                #We are going to double check the locks timestamp is not over 90 seconds from current epoch
                 #If so, we are going to blow it away, as its BAD (no lock should exist over 1 minute)
                 with open('/tmp/s2r.lck', 'r') as lckfile:
                     oldEpoch = int(lckfile.read())
