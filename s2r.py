@@ -981,13 +981,8 @@ class EventPusher:
             if err.errno == errno.EEXIST:
                 self.log.info('Unable to aquire lock, existing lock in place')
                 #We are going to double check the locks timestamp is not over 90 seconds from current epoch
-<<<<<<< HEAD
                 #If so, we are going to blow it away, as its BAD (no lock should exist over 120 seconds)
                 with open('s2r.lck', 'r') as lckfile:
-=======
-                #If so, we are going to blow it away, as its BAD (no lock should exist over 1 minute)
-                with open('/tmp/s2r.lck', 'r') as lckfile:
->>>>>>> 5404a21eb669f685f26b78685c11e4aa3f89673f
                     oldEpoch = int(lckfile.read())
                     if int(time.time()) - oldEpoch >= 90:
                         self.log.warn('Attempting to remov old lock file, is over 90 seconds old')
@@ -1143,10 +1138,5 @@ def main(args):
 if __name__ == '__main__':
     # - Init/Start Logger
     EventLogger()
-<<<<<<< HEAD
     # - Send event data to main
     main(sys.argv)
-=======
-    #Send event data to main
-    main(sys.argv)
->>>>>>> 5404a21eb669f685f26b78685c11e4aa3f89673f
