@@ -52,9 +52,18 @@ Recovery:
 	You can check the queue by executing  /<splunk installation>/bin/scripts/s2r.py --checkqueue
 	Will return number of stored events.
 
+<<<<<<< HEAD
 	You can attempt to send stored events by excuting /<splunk installation>/bin/scripts/s2r.py --processqueue
 
 Other:
 	Modules tabulate.zip and requests.zip are loaded with the script during execution.
 	They are provided with the script as python2.7 may not have these modules installed.
 	This is to help resolve possible dependancies issues.
+=======
+    You can attempt to send stored events by executing /<splunk installation>/bin/scripts/s2r.py --process-queue
+
+Other:
+    Modules tabulate.zip and requests.zip are loaded with the script during execution.
+    They are provided with the script as python2.7 may not have these modules installed.
+    This is to help resolve dependancies.
+>>>>>>> 5404a21eb669f685f26b78685c11e4aa3f89673f
