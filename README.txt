@@ -1,4 +1,4 @@
-Splunk2Resilient v0.6
+Splunk2Resilient v0.6.2
 Used to process Splunk alerts into Resilient ticket items.
 
 Installation:
