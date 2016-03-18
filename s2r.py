@@ -1,7 +1,7 @@
 #!/usr/bin/python
 #Splunk alert script to generate Resilient events
 __maintainer__  = '{Ministry of Promise}'
-__version__     = 'Beta 0.6'
+__version__     = 'Beta 0.6.1'
 ###################################
 import sys, os
 #Where does the splunk installation live?
@@ -180,7 +180,7 @@ class EventParser:
                                 '__priority':   priority,
                                 '__focus':      None,
                                 '__events':     [],
-                                '__timeutc':    timegm(datetime.datetime.utcnow().utctimetuple())*1000
+                                '__timeutc':    timegm(datetime.datetime.utcnow().utctimetuple())
                                 } 
 
             #Get all the fields for this alert
@@ -586,9 +586,9 @@ class EventPusher:
                             idxHtml     =  str(value).index("__search__")+10
                             descString  += "<li><b>Splunk Link:</b>&nbsp;<a href='{}' target='_blank'>{}</a></li>".format(str(value), str(value)[idxHtml:])
                         elif key == "__timeutc":
-                            utcTimeStamp  = int(int(value)/1000)
+                            utcTimeStamp  = int(value)
                             dt            = datetime.datetime.utcfromtimestamp(utcTimeStamp)
-                            displayString = "{}:{}:{} {}/{}/{}".format(dt.hour,dt.minute,dt.second,dt.month,dt.day,dt.year)
+                            displayString = "{0:02d}:{1:02d}:{2:02d} {3:02d}/{4:02d}/{5}".format(dt.hour,dt.minute,dt.second,dt.month,dt.day,dt.year)
                             descString    += "<li><b>Time UTC:</b>&nbsp;{}</li>".format(displayString)
                         else:
                             descString    += "<li><b>{}:</b>&nbsp;{}</li>".format(key[2:].title(), str(value))
@@ -717,11 +717,18 @@ class EventPusher:
 
         def processQuery(incident):
             try:
+                #Some symbols will need to be replaced
+                repsyms = {'<': '&lt;', '>':'&gt;'}
                 query   = incident['__query']
                 outText = "<b>Splunk Query</b><br/>"
                 #Clean up the Query Output, wrap on the pipe |
                 cnt = len(query.split("|"))
                 for item in query.split("|"):
+
+                    #HTML escaping fix for symbols listed in repsym dict
+                    for ritem in repsyms.items():
+                        if ritem[0] in item:
+                            item = item.replace(ritem[0], ritem[1])
                     cnt-=1
                     outText +=item+"|" if cnt != 0 else item
                 else:
