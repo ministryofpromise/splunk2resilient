@@ -180,7 +180,7 @@ class EventParser:
                                 '__priority':   priority,
                                 '__focus':      None,
                                 '__events':     [],
-                                '__timeutc':    timegm(datetime.datetime.utcnow().utctimetuple())
+                                '__timeutc':    timegm(datetime.datetime.utcnow().utctimetuple())*1000
                                 } 
 
             #Get all the fields for this alert
@@ -586,7 +586,7 @@ class EventPusher:
                             idxHtml     =  str(value).index("__search__")+10
                             descString  += "<li><b>Splunk Link:</b>&nbsp;<a href='{}' target='_blank'>{}</a></li>".format(str(value), str(value)[idxHtml:])
                         elif key == "__timeutc":
-                            utcTimeStamp  = int(value)
+                            utcTimeStamp  = int(int(value)/1000)
                             dt            = datetime.datetime.utcfromtimestamp(utcTimeStamp)
                             displayString = "{0:02d}:{1:02d}:{2:02d} {3:02d}/{4:02d}/{5}".format(dt.hour,dt.minute,dt.second,dt.month,dt.day,dt.year)
                             descString    += "<li><b>Time UTC:</b>&nbsp;{}</li>".format(displayString)
