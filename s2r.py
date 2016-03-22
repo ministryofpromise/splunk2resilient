@@ -1,7 +1,7 @@
 #!/usr/bin/python
 #Splunk alert script to generate Resilient events
 __maintainer__  = '{Ministry of Promise}'
-__version__     = 'Beta 0.6.1'
+__version__     = 'Beta 0.6.2'
 ###################################
 import sys, os
 #Where does the splunk installation live?
@@ -583,8 +583,12 @@ class EventPusher:
                 for key, value in incident.items():
                     if not key in ['__events','__query', '__artifacts']:
                         if key == "__url":
-                            idxHtml     =  str(value).index("__search__")+10
-                            descString  += "<li><b>Splunk Link:</b>&nbsp;<a href='{}' target='_blank'>{}</a></li>".format(str(value), str(value)[idxHtml:])
+                            try:
+                                idxHtml     =  str(value).index("__search__")+10
+                                descString  += "<li><b>Splunk Link:</b>&nbsp;<a href='{}' target='_blank'>{}</a></li>".format(str(value), str(value)[idxHtml:])
+                            except Exception as err:
+                                self.log.warn("Unable to parse query url - [{}] error - {}, using unparsed value.".format(value, err))
+                                descString += "<li><b>Splunk Link:</b>&nbsp;<a href='{0}' target='_blank'>{0}</a></li>".format(str(value))
                         elif key == "__timeutc":
                             utcTimeStamp  = int(int(value)/1000)
                             dt            = datetime.datetime.utcfromtimestamp(utcTimeStamp)
@@ -597,6 +601,7 @@ class EventPusher:
                 return descString
             except Exception as err:
                 self.log.warn(err)
+                raise Exception("Ticket creation encountered issues when processing description: {}".format(err))
 
         def processArtifacts(incident, out=None):
             try:
@@ -624,6 +629,7 @@ class EventPusher:
                     return artString
             except Exception as err:
                 self.log.warn(err)
+                raise Exception("Ticket creation encountered issues when processing artifacts: {}".format(err))
 
         def processSpunkTable(incident):
             try:
@@ -714,6 +720,7 @@ class EventPusher:
                 return output
             except Exception as err:
                 self.log.warn(err)
+                raise Exception("Ticket creation encountered issues when processing splunk table: {}".format(err))
 
         def processQuery(incident):
             try:
@@ -736,28 +743,37 @@ class EventPusher:
                 return outText
             except Exception as err:
                 self.log.warn(err)
+                raise Exception("Ticket creation encountered issues when processing splunk query: {}".format(err))
 
         try:
-            #Step One - Create Incident ticket
-            #URI to perform the initial creation of the incident ticket. 
-            url     = "{0}/rest/orgs/{1}/incidents/".format(self.hostURI, self.orgid)
-            #SeverityCodes - 56(High), 55(Medium), 54(Low)
-            severityMap      = { "HIGH" : 56, "MEDIUM" : 55, "LOW" : 54}
-            incidentTemplate = {
-                                "name": incident['__alert'],
-                                "discovered_date": int(incident['__timeutc']),
-                                "description" : processDescription(incident),
-                                "artifacts" : processArtifacts(incident, out='json'),
-                                "properties" : { 
-                                    "event_hash": incident['__ehash']
-                                },
-                                "severity_code": severityMap[incident['__priority']]
-                            }
-            payload = json.dumps(incidentTemplate) 
-            results = self.executeRequest('POST', url, data=payload)
-            jsonData = json.loads(results.text)
-            incidentNumber = jsonData["id"]
-            self.log.info("Added Incident ticket {}".format(incidentNumber))
+            #Init variable
+            incidentNumber = False
+
+            try:
+                #Step One - Create Incident ticket
+                #URI to perform the initial creation of the incident ticket. 
+                url     = "{0}/rest/orgs/{1}/incidents/".format(self.hostURI, self.orgid)
+                #SeverityCodes - 56(High), 55(Medium), 54(Low)
+                severityMap      = { "HIGH" : 56, "MEDIUM" : 55, "LOW" : 54}
+                incidentTemplate = {
+                                    "name": incident['__alert'],
+                                    "discovered_date": int(incident['__timeutc']),
+                                    "description" : processDescription(incident),
+                                    "artifacts" : processArtifacts(incident, out='json'),
+                                    "properties" : { 
+                                        "event_hash": incident['__ehash']
+                                    },
+                                    "severity_code": severityMap[incident['__priority']]
+                                }
+                payload = json.dumps(incidentTemplate) 
+                results = self.executeRequest('POST', url, data=payload)
+                jsonData = json.loads(results.text)
+                incidentNumber = jsonData["id"]
+                self.log.info("Added Incident ticket {}".format(incidentNumber))
+
+            except Exception as err:
+                self.log.warn("Unable to create initial incident ticket: {}".format(err))
+                raise Exception("Ticket creation encountered issues when creating incident: {}".format(err))
 
             try:
                 #Step Two, Create a note w/ more details
@@ -796,7 +812,7 @@ class EventPusher:
         except Exception as err:
             self.log.war(err)
 
-    def failureLoadEvents(self, count=None):
+    def failureLoadEvents(self, count=None, override=False):
         """
             If we where unable to communicate with the Resilent ticketing system, we likely dumped alert events to a file.
             Look to see if any s2r_queued_<uuid>.json files exists in current directory, if so load them into a event Container.
@@ -807,9 +823,11 @@ class EventPusher:
         """
         lockaquired = False
         #Exit if we dont want to attempt recovery - sendonup == True in config file
+        # - If override is set True, attempt to process queue events if they exists
         if not self.sendOnUp and not count:
-            self.log.info("Not sending queued events, option disabled in config") 
-            sys.exit(0)
+            if not override:
+                self.log.info("Not sending queued events, option disabled in config") 
+                sys.exit(0)
         try:
             #Get directory where alert events are being written.
             qdir = self.config.get('recovery', 'queuedir')
@@ -939,8 +957,12 @@ class EventPusher:
                 tmpHeaders['Focus:']    = xvnt['__focus']
                 #Clean up URL
                 splunkurl   = xvnt['__url']
-                idxHtml = str(splunkurl).index("__search__")+10
-                tmpHeaders['Splunk Link:']  = "<a href='{}' target='_blank'>{}</a>".format(str(splunkurl), str(splunkurl)[idxHtml:])
+                try:
+                    idxHtml = str(splunkurl).index("__search__")+10
+                    tmpHeaders['Splunk Link:']  = "<a href='{}' target='_blank'>{}</a>".format(str(splunkurl), str(splunkurl)[idxHtml:])
+                except Exception as err:
+                    self.log.warn("Unable to parse query url - [{}] error - {}, using unparsed value.".format(value, err))
+                    tmpHeaders['Splunk Link:']  = "<a href='{0}' target='_blank'>{0}</a>".format(str(splunkurl))
                 ##
                 evnts       = xvnt['__events']
                 #Enrich artifacts, transform int values to valid name values
@@ -989,11 +1011,17 @@ class EventPusher:
                 self.log.info('Unable to aquire lock, existing lock in place')
                 #We are going to double check the locks timestamp is not over 90 seconds from current epoch
                 #If so, we are going to blow it away, as its BAD (no lock should exist over 120 seconds)
-                with open('s2r.lck', 'r') as lckfile:
-                    oldEpoch = int(lckfile.read())
-                    if int(time.time()) - oldEpoch >= 90:
-                        self.log.warn('Attempting to remov old lock file, is over 90 seconds old')
-                        self.delLock()
+                #If we cannot read the timestamp, we are going to blow it away.
+                try:
+                    with open('s2r.lck', 'r') as lckfile:
+                        oldEpoch = int(lckfile.read())
+                        if int(time.time()) - oldEpoch >= 90:
+                            self.log.warn('Attempting to remov old lock file, is over 90 seconds old')
+                            self.delLock()
+                except:
+                    self.log.warn('Unable to read timestamp on lock file, deleting lock')
+                    self.delLock()
+
                 return False
             else:
                 self.log.info('Unable to set lock, see error: {}'.format(err))
@@ -1024,7 +1052,7 @@ class EventPusher:
             Generic smtp email client
             Requires recipient / sender / subject
             Can send text or html messages (or both) via txtmsg and htmlmsg
-            Returns True on send, otherwise False on error
+            Returns True on send, otherwise raises Exception
         """
         try:
             # Create message container
@@ -1045,7 +1073,7 @@ class EventPusher:
             return True
         except Exception as err:
             self.log.warn("Unable to send email: {}".format(err))
-            return False
+            raise Exception(err)
 
 class TLSHttpAdapter(HTTPAdapter):
     """
@@ -1077,7 +1105,7 @@ def processQueue():
     print "Attempting to process any queued events, see s2r log for details"
     eventpusher = EventPusher()
     eventpusher.connect()
-    eventpusher.failureLoadEvents()
+    eventpusher.failureLoadEvents(override=True)
     sys.exit(0)
 
 def testConnection():
