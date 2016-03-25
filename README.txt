@@ -1,4 +1,4 @@
-Splunk2Resilient v0.6.2
+Splunk2Resilient v0.7.0
 Used to process Splunk alerts into Resilient ticket items.
 
 Installation:
@@ -53,8 +53,3 @@ Recovery:
 	Will return number of stored events.
 
     You can attempt to send stored events by executing /<splunk installation>/bin/scripts/s2r.py --processqueue
-
-Other:
-    Modules tabulate.zip and requests.zip are loaded with the script during execution.
-    They are provided with the script as python2.7 may not have these modules installed.
-    This is to help resolve dependancies.

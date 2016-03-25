@@ -1,51 +1,35 @@
 #!/usr/bin/python
 #Splunk alert script to generate Resilient events
 __maintainer__  = '{Ministry of Promise}'
-__version__     = 'Beta 0.6.2'
-###################################
-import sys, os
-#Where does the splunk installation live?
+__version__     = 'Beta 0.7.0'
+
 try:
-    splunkHome = os.environ['HOME']
-    scriptDirectory = splunkHome + '/bin/scripts'
-    os.chdir(scriptDirectory)
-    #Import requests module
-    sys.path.insert(0, 'requests.zip')
+    import sys, os
     import requests
     from requests.adapters import HTTPAdapter
     from requests.packages.urllib3.poolmanager import PoolManager
-    #Surpress warnings about SSL
-    requests.packages.urllib3.disable_warnings()
-    #Import tabulate module
-    sys.path.insert(0, 'tabulate.zip')
-    from tabulate import tabulate
+    import traceback, errno
+    import logging, logging.handlers
+    import argparse
+    import ConfigParser
+    import glob, platform
+    import re
+    import datetime, time
+    from calendar import timegm
+    import gzip
+    import csv
+    import hashlib, uuid
+    import copy
+    import ssl
+    import json
+    import collections
+    import smtplib
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    import pprint
 except ImportError as err:
     print "Unable to import essential modules: {}".format(err)
     sys.exit(-1)
-except OSError as err:
-    print "Unable to access scripts directory for Splunk user: {}".format(err)
-    print "Must be ran as Splunk user, with $HOME set to location of splunk intallation, typically located at /opt/splunk"
-    sys.exit(-1)
-###################################
-import traceback, errno
-import logging, logging.handlers
-import argparse
-import ConfigParser
-import glob, platform
-import re
-import datetime, time
-from calendar import timegm
-import gzip
-import csv
-import hashlib, uuid
-import copy
-import ssl
-import json
-import collections
-import smtplib
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-import pprint
 
 class EventLogger:
     """
@@ -323,7 +307,9 @@ class EventParser:
             return {item: '29'}
 
 class EventPusher:
-
+    """
+        EventPuser class takes prcessed events and attempts to send them to Resilient.
+    """
     def __init__(self):
         try:
             #Get Configuration options
@@ -340,10 +326,11 @@ class EventPusher:
             self.log.debug('EventPusher class initialized')
             #Connection Specific Variables
             self.verifyssl   = self.config.getboolean('resilient', 'verifyssl')
-            self.proxy       = self.config.get('resilient', 'proxy')
+            self.proxy       = {"https" : self.config.get('resilient', 'proxy')}
             self.timeout     = self.config.getint('resilient', 'timeout')
             #Style and Layout Variables
-            self.splunktablelayout = self.config.getboolean('system', 'splunktablelayout')
+            self.splunktablelayout  = self.config.getboolean('system', 'splunktablelayout')
+            self.splunkquerybreak   = self.config.getboolean('system', 'splunkquerybreak')
             #Other variables
             self.session  = requests.Session()
             self.session.mount('https://', TLSHttpAdapter())
@@ -573,178 +560,8 @@ class EventPusher:
             Process incident into a json statement, then insert incident into system
             Returns False if error occured, see log for details
             Returns id of created incident
-            *contains sub functions <process*> for pre-processing data
             *This function makes 2 calls.  1st call creates incident ticket, second adds addition details
         """
-        def processDescription(incident):
-            try:
-                #Get all header information, this will make up the details, -events - artifacts -query
-                descString = "<b>Splunk Generated Event</b><br/><ol style='list-style-type:circle'>"
-                for key, value in incident.items():
-                    if not key in ['__events','__query', '__artifacts']:
-                        if key == "__url":
-                            try:
-                                idxHtml     =  str(value).index("__search__")+10
-                                descString  += "<li><b>Splunk Link:</b>&nbsp;<a href='{}' target='_blank'>{}</a></li>".format(str(value), str(value)[idxHtml:])
-                            except Exception as err:
-                                self.log.warn("Unable to parse query url - [{}] error - {}, using unparsed value.".format(value, err))
-                                descString += "<li><b>Splunk Link:</b>&nbsp;<a href='{0}' target='_blank'>{0}</a></li>".format(str(value))
-                        elif key == "__timeutc":
-                            utcTimeStamp  = int(int(value)/1000)
-                            dt            = datetime.datetime.utcfromtimestamp(utcTimeStamp)
-                            displayString = "{0:02d}:{1:02d}:{2:02d} {3:02d}/{4:02d}/{5}".format(dt.hour,dt.minute,dt.second,dt.month,dt.day,dt.year)
-                            descString    += "<li><b>Time UTC:</b>&nbsp;{}</li>".format(displayString)
-                        else:
-                            descString    += "<li><b>{}:</b>&nbsp;{}</li>".format(key[2:].title(), str(value))
-                else:
-                    descString += "</ol><br></div>"
-                return descString
-            except Exception as err:
-                self.log.warn(err)
-                raise Exception("Ticket creation encountered issues when processing description: {}".format(err))
-
-        def processArtifacts(incident, out=None):
-            try:
-                #Processes Artifact information as JSON or HTML
-                #- Set out='json' or out='html' for return type.
-                if not out:
-                    return None
-                if out == 'json':
-                    #Get all header information, this will make up the details, -events - artifacts -query
-                    json = [{"type": int(aid), "value": avalue} for avalue, aid in incident['__artifacts'].items()]
-                    return json
-                if out == 'html':
-                    artCodes = {
-                            1: "IP Address",
-                            2: "DNS",
-                            3: "URL",
-                            4: "eMail",
-                            13: "Malware MD5",
-                            14: "Malware SHA1",
-                            29: "String"
-                            }
-                    artString  = "<b>Artifacts</b><br/>"
-                    artString += "".join(["<b>{}:</b>&nbsp;&nbsp;{}<br/>".format(artCodes[int(aid)],avalue) for avalue, aid in incident['__artifacts'].items()])
-                    artString += "<br>"
-                    return artString
-            except Exception as err:
-                self.log.warn(err)
-                raise Exception("Ticket creation encountered issues when processing artifacts: {}".format(err))
-
-        def processSpunkTable(incident):
-            try:
-                #Create HTML based table w/o table elements compatible with Resilient
-                # - A bit hackish, but it works
-                tabledata  = incident['__events']
-                headers    = tabledata[0].keys()
-
-                #Determing output by output option set in config file True-> Horizontal / False-> Vertical
-                if self.splunktablelayout:
-                    #Construct Horizontal Table
-                    # - Table Variables
-                    output = "<br/><b>Splunk Results Table</b><br/><div style='display: table;border-top: 1px solid black;border-left: 1px solid black;'>"
-                    tblrow = "<div style='display: table-row-group;'>{}</div>"
-                    #Cell Style
-                    # Args for Template, additional sytle details, cell contents
-                    tblcll = "<div style='display: table-cell;font-weight:light;text-align:center;color: black;border-right: 1px solid black;border-bottom: 1px solid black;{}'>{}</div>"
-
-                    # - Construct the Table header
-                    tmpout = ""
-                    # - Set cell style
-                    style  = "font-weight:bold;font-size:90%;color: black;background-color: #6ca146;padding: 8px;"
-                    for xheadr in headers:
-                        tcell  = tblcll.format(style, '{}')
-                        tmpout += tcell.format(xheadr)
-                    output += tblrow.format(tmpout)
-
-                    # - Construct the Table rows
-                    cntr = 2
-                    for event in tabledata:
-                        tmpout = ""
-                        # - Set cell style
-                        if cntr % 2 == 0:
-                            style = "font-size:85%;color: black;background-color: #f2f2f2;padding: 5px;"
-                            tcell = tblcll.format(style, '{}')
-                        else:
-                            style = "font-size:85%;color: black;background-color: #d9d9d9;padding: 5px;"
-                            tcell = tblcll.format(style, '{}')
-
-                        for cell in event.values():
-                            tmpout += tcell.format(cell)
-                        output += tblrow.format(tmpout)
-                        cntr += 1
-
-                    # - End of Table
-                    output += "</div>"
-
-                else:
-                    #Construct Vertical Table
-                    # - Table Variables
-                    output = "<br/><b>Splunk Results Table</b><br/><div style='display: table;border-top: 1px solid black;border-left: 1px solid black;'>"
-                    tblrow = "<div style='display: table-row-group;'>{}</div>"
-                    #Cell Style
-                    # Args for Template, additional sytle details, cell contents
-                    tblcll  = "<div style='display: table-cell;border-right: 1px solid black;border-bottom: 1px solid black;{}'>{}</div>"
-
-                    cntr = 2
-                    for event in tabledata:
-                        
-                        # - Color code groups for easier reading
-                        if cntr % 2 == 0:
-                            vstyle  = "font-size:85%;background-color: #d9d9d9;text-align:center;font-weight:light;padding:2px;"
-                            vcell   = tblcll.format(vstyle, '{}')
-                            kstyle  = "font-size:90%;text-align:left;color: black;background-color: #6ca146;font-weight:bold;padding-left: 5px; padding-right: 10px;"
-                            kcell   = tblcll.format(kstyle, '{}')
-                        else:
-                            vstyle  = "font-size:85%;background-color: #f2f2f2;text-align:center;font-weight:light;padding: 2px;"
-                            vcell   = tblcll.format(vstyle, '{}')
-                            kstyle  = "font-size:90%;text-align:left;color: black;background-color: #86b960;font-weight:bold;padding-left: 5px; padding-right: 10px;"
-                            kcell   = tblcll.format(kstyle, '{}')
-                        # 
-                        # - Build out vertical table
-                        for k, v in event.items():
-                            tmpout = ""
-                            # - Write the Kvalue
-                            tmpout += kcell.format(k)
-                            # - Write the Vvalue
-                            tmpout += vcell.format(v)
-                            # - Add it to a row group, then to output, cont
-                            output += tblrow.format(tmpout)
-
-                        cntr += 1
-
-                    else:
-                        # - End of Table
-                        output += "</div>"
-
-                return output
-            except Exception as err:
-                self.log.warn(err)
-                raise Exception("Ticket creation encountered issues when processing splunk table: {}".format(err))
-
-        def processQuery(incident):
-            try:
-                #Some symbols will need to be replaced
-                repsyms = {'<': '&lt;', '>':'&gt;'}
-                query   = incident['__query']
-                outText = "<b>Splunk Query</b><br/>"
-                #Clean up the Query Output, wrap on the pipe |
-                cnt = len(query.split("|"))
-                for item in query.split("|"):
-
-                    #HTML escaping fix for symbols listed in repsym dict
-                    for ritem in repsyms.items():
-                        if ritem[0] in item:
-                            item = item.replace(ritem[0], ritem[1])
-                    cnt-=1
-                    outText +=item+"|" if cnt != 0 else item
-                else:
-                    outText +="<br/>"
-                return outText
-            except Exception as err:
-                self.log.warn(err)
-                raise Exception("Ticket creation encountered issues when processing splunk query: {}".format(err))
-
         try:
             #Init variable
             incidentNumber = False
@@ -758,8 +575,8 @@ class EventPusher:
                 incidentTemplate = {
                                     "name": incident['__alert'],
                                     "discovered_date": int(incident['__timeutc']),
-                                    "description" : processDescription(incident),
-                                    "artifacts" : processArtifacts(incident, out='json'),
+                                    "description" : self.processDescription(incident),
+                                    "artifacts" : self.processArtifacts(incident, out='json'),
                                     "properties" : { 
                                         "event_hash": incident['__ehash']
                                     },
@@ -778,7 +595,7 @@ class EventPusher:
             try:
                 #Step Two, Create a note w/ more details
                 #Concat all the outputs to a note
-                details = processDescription(incident)+processArtifacts(incident, out='html')+processQuery(incident)+processSpunkTable(incident)
+                details = self.processDescription(incident)+self.processArtifacts(incident, out='html')+self.processQuery(incident)+self.processSpunkTable(incident)
                 url     = "{}/rest/orgs/{}/incidents/{}/comments".format(self.hostURI, self.orgid, incidentNumber)
                 payload = json.dumps({"text" : { "format" : "html", "content" : details}})
                 results = self.executeRequest('POST', url, data=payload)
@@ -873,117 +690,29 @@ class EventPusher:
     def failureSendEmail(self, events):
         """
             Process events into messages which can be sent to an email address.
-            Sends text and html based messages
+            Sends html based messages
         """
         #Variables
         sender      = self.config.get('recovery', 'sender')
         recipient   = self.config.get('recovery', 'recipient')
         self.log.info("Sending events via Email")
-
-        #Format Helpers
-        def textBase(tmpHeaders, query, artifacts, evnts):
-            """
-                Handle Text Based Message formating for email
-            """
-            try:
-                outText = ""
-                outText += "Splunk Generated Event\n"
-                outText += tabulate(tmpHeaders.iteritems(), tablefmt="plain", stralign="left")
-                outText += "\n\n"
-                outText += "Splunk Results Table\n"
-                outText += tabulate(evnts, headers="keys", tablefmt="plain", stralign="center")
-                outText += "\n\n"
-                outText += "Event Artifacts\n"
-                outText += tabulate(artifacts, tablefmt="plain", stralign="left")
-                outText += "\n\n"
-                outText += "Splunk Query\n"
-                #Clean up the Query Output, wrap on the pipe |
-                cnt = len(query.split("|"))
-                for item in query.split("|"):
-                    cnt-=1
-                    outText += item+"\n|" if cnt != 0 else item 
-                else:
-                    outText += "\n\n"
-                return outText
-            except Exception as err:
-                self.log.warn(err)
-
-        def htmlBase(tmpHeaders, query, artifacts, evnts):
-            """
-                Handle HTML Based Message formating for email (This is the best way...)
-            """
-            try:
-                outText = ""
-                outText += "<b>Splunk Generated Event</b>"
-                outText += tabulate(tmpHeaders.iteritems(), tablefmt="html", stralign="left")
-                outText += "<br clear=\"all\" style=\"page-break-before:always\" />"
-                outText += "<b>Splunk Results Table</b>"
-                outText += tabulate(evnts, headers="keys", tablefmt="html", stralign="center")
-                outText += "<br clear=\"all\" style=\"page-break-before:always\" />"
-                outText += "<b>Event Artifacts</b>"
-                outText += tabulate(artifacts, tablefmt="html", stralign="left")
-                outText += "<br clear=\"all\" style=\"page-break-before:always\" />"
-                outText += "<b>Splunk Query</b><br/>"
-                #Clean up the Query Output, wrap on the pipe |
-                cnt = len(query.split("|"))
-                for item in query.split("|"):
-                    cnt-=1
-                    outText += item+"<br/>|" if cnt != 0 else item 
-                else:
-                    outText += "<br clear=\"all\" style=\"page-break-before:always\" /> <br/>"
-                return outText
-            except Exception as err:
-                self.log.warn(err)
-
         try:        
             #If we have a large number of events > 10, add delay.
             isBulk = True if len(events) >= 10 else False
             if isBulk: self.log.info("Bulk number of events detected, adding delay per email")
             #Process events, then mail them out
             for xvnt in events:
-                headers     = [y for y in xvnt.keys() if not '__events' in y]
-                tmpHeaders  = collections.OrderedDict()
-                tmpHeaders['Alert:']    = xvnt['__alert']
-                tmpHeaders['Priority:']  = xvnt['__priority']
-                tmpHeaders['Count:']    = xvnt['__count']
-                #Perform Time translation to make it human readable
-                timestamp = xvnt['__timeutc']
-                utcTimeStamp = int(int(timestamp)/1000)
-                dt = datetime.datetime.utcfromtimestamp(utcTimeStamp)
-                displayString = "{}:{}:{} {}/{}/{}".format(dt.hour,dt.minute,dt.second,dt.month,dt.day,dt.year)
-                tmpHeaders['Time UTC:']  = displayString
-                ##
-                tmpHeaders['Ehash:']    = xvnt['__ehash']
-                tmpHeaders['Focus:']    = xvnt['__focus']
-                #Clean up URL
-                splunkurl   = xvnt['__url']
-                try:
-                    idxHtml = str(splunkurl).index("__search__")+10
-                    tmpHeaders['Splunk Link:']  = "<a href='{}' target='_blank'>{}</a>".format(str(splunkurl), str(splunkurl)[idxHtml:])
-                except Exception as err:
-                    self.log.warn("Unable to parse query url - [{}] error - {}, using unparsed value.".format(value, err))
-                    tmpHeaders['Splunk Link:']  = "<a href='{0}' target='_blank'>{0}</a>".format(str(splunkurl))
-                ##
-                evnts       = xvnt['__events']
-                #Enrich artifacts, transform int values to valid name values
-                artCodes = {
-                            1: "IP Address: ",
-                            2: "DNS: ",
-                            3: "URL: ",
-                            4: "eMail: ",
-                            13: "Malware MD5: ",
-                            14: "Malware SHA1: ",
-                            29: "String: "
-                            }
-                artifacts = [(artCodes[int(y)], x) for x,y in xvnt['__artifacts'].items()]
-                ##
-                query     = xvnt['__query']
-                #Process Text for this event
-                msgText = textBase(tmpHeaders, query, artifacts, evnts)
-                msgHTML = htmlBase(tmpHeaders, query, artifacts, evnts)
+                #Process HTML for this event
+                htmlmsg =  "<html>"
+                htmlmsg += self.processDescription(xvnt)
+                htmlmsg += self.processArtifacts(xvnt, out='html')
+                htmlmsg += self.processQuery(xvnt)
+                htmlmsg += self.emailSpunkTable(xvnt)
+                htmlmsg += "</html>"
+
                 subject = "Splunk2Resilient: {}, failed to send to Resilent".format(xvnt['__alert'])
-                #We send both HTML and TEXT formats, however HTML is preferred, as text is VERY hard to format
-                self.mailer(recipient, sender, subject, txtmsg=msgText, htmlmsg=msgHTML)
+                #We send HTML formatted emails
+                self.mailer(recipient, sender, subject, htmlmsg=htmlmsg)
                 #Insert artificial delay of 0.5sec/email, if a LARGE number of emails are generated, we dont want to get locked out.
                 if isBulk:
                     time.sleep(0.5)
@@ -1074,6 +803,304 @@ class EventPusher:
         except Exception as err:
             self.log.warn("Unable to send email: {}".format(err))
             raise Exception(err)
+
+    def emailSpunkTable(self, incident):
+        '''
+            Incident splunk table process
+            Takes incident, returns HTML formatted table of Splunk output for email, otherwise raises exception
+        '''
+        try:
+            #Create HTML based table w/o table elements compatible with Resilient
+            # - A bit hackish, but it works
+            tabledata  = incident['__events']
+            headers    = tabledata[0].keys()
+
+            #Determing output by output option set in config file True-> Horizontal / False-> Vertical
+            if self.splunktablelayout:
+                #Construct Horizontal Table
+                # - Table Variables
+                output = "<br/><b>Splunk Results Table</b><br/><table cellpadding='1' cellspacing='2' style='border: 1px solid black;'>"
+                tblrow = "<tr>{}</tr>"
+                #Cell Style
+                # Args for Template, additional sytle details, cell contents
+                tblcll = "<td style='{}'>{}</td>"
+
+                # - Construct the Table header
+                tmpout = ""
+                # - Set cell style
+                style  = "border: 1px solid black;font-weight:bold;color: black;background-color: #6ca146;padding: 8px;"
+                for xheadr in headers:
+                    tcell  = tblcll.format(style, '{}')
+                    tmpout += tcell.format(xheadr)
+                output += tblrow.format(tmpout)
+
+                # - Construct the Table rows
+                cntr = 2
+                for event in tabledata:
+                    tmpout = ""
+                    # - Set cell style
+                    if cntr % 2 == 0:
+                        style = "border: 1px solid black;color: black;background-color: #ffffff;"
+                        tcell = tblcll.format(style, '{}')
+                    else:
+                        style = "border: 1px solid black;color: black;background-color: #d9d9d9;"
+                        tcell = tblcll.format(style, '{}')
+
+                    for cell in event.values():
+                        tmpout += tcell.format(cell)
+                    output += tblrow.format(tmpout)
+                    cntr += 1
+
+                # - End of Table
+                output += "</table>"
+            else:
+                #Construct Vertical Table
+                # - Table Variables
+                output = "<br/><b>Splunk Results Table</b><br/><table width='350' border='1' cellpadding='1' cellspacing='2'>"
+                tblrow = "<tr>{}</tr>"
+                #Cell Style
+                # Args for Template, additional sytle details, cell contents
+                tblcll  = "<td style='{}'>{}</td>"
+
+                cntr = 2
+                for event in tabledata:
+                    
+                    # - Color code groups for easier reading
+                    if cntr % 2 == 0:
+                        vstyle  = "border: 1px solid black;background-color: #d9d9d9;"
+                        vcell   = tblcll.format(vstyle, '{}')
+                        kstyle  = "border: 1px solid black;color: black;background-color: #6ca146;"
+                        kcell   = tblcll.format(kstyle, '{}')
+                    else:
+                        vstyle  = "border: 1px solid black;background-color: #ffffff;"
+                        vcell   = tblcll.format(vstyle, '{}')
+                        kstyle  = "border: 1px solid black;color: black;background-color: #86b960;"
+                        kcell   = tblcll.format(kstyle, '{}')
+                    # 
+                    # - Build out vertical table
+                    for k, v in event.items():
+                        tmpout = ""
+                        # - Write the Kvalue
+                        tmpout += kcell.format(k)
+                        # - Write the Vvalue
+                        tmpout += vcell.format(v)
+                        # - Add it to a row group, then to output, cont
+                        output += tblrow.format(tmpout)
+
+                    cntr += 1
+
+                else:
+                    # - End of Table
+                    output += "</table>"
+
+            return output
+        except Exception as err:
+            self.log.warn(err)
+            raise Exception("Encountered issues when processing splunk table: {}".format(err))
+
+    def processDescription(self, incident):
+        '''
+            Incident description process
+            Takes incident, returns HTML formatted table of description output, otherwise raises exception
+        '''
+        try:
+            #Get all header information, this will make up the details, -events - artifacts -query
+            descString = "<b>Splunk Generated Event</b><br/><ol style='list-style-type:circle'>"
+            for key, value in incident.items():
+                if not key in ['__events','__query', '__artifacts']:
+                    if key == "__url":
+                        try:
+                            idxHtml     =  str(value).index("__search__")+10
+                            descString  += "<li><b>Splunk Link:</b>&nbsp;<a href='{}' target='_blank'>{}</a></li>".format(str(value), str(value)[idxHtml:])
+                        except Exception as err:
+                            self.log.warn("Unable to parse query url - [{}] error - {}, using unparsed value.".format(value, err))
+                            descString += "<li><b>Splunk Link:</b>&nbsp;<a href='{0}' target='_blank'>{0}</a></li>".format(str(value))
+                    elif key == "__timeutc":
+                        utcTimeStamp  = int(int(value)/1000)
+                        dt            = datetime.datetime.utcfromtimestamp(utcTimeStamp)
+                        displayString = "{0:02d}:{1:02d}:{2:02d} {3:02d}/{4:02d}/{5}".format(dt.hour,dt.minute,dt.second,dt.month,dt.day,dt.year)
+                        descString    += "<li><b>Time UTC:</b>&nbsp;{}</li>".format(displayString)
+                    else:
+                        descString    += "<li><b>{}:</b>&nbsp;{}</li>".format(key[2:].title(), str(value))
+            else:
+                descString += "</ol><br></div>"
+            return descString
+        except Exception as err:
+            self.log.warn(err)
+            raise Exception("Encountered issues when processing description: {}".format(err))
+
+    def processArtifacts(self, incident, out=None):
+        '''
+            Incident artifact table process
+            Takes incident, returns HTML or JSON formatted table of Artifact output, otherwise raises exception
+        '''
+        try:
+            #Processes Artifact information as JSON or HTML
+            #- Set out='json' or out='html' for return type.
+            if not out:
+                return None
+            if out == 'json':
+                #Get all header information, this will make up the details, -events - artifacts -query
+                json = [{"type": int(aid), "value": avalue} for avalue, aid in incident['__artifacts'].items()]
+                return json
+            if out == 'html':
+                artCodes = {
+                        1: "IP Address",
+                        2: "DNS",
+                        3: "URL",
+                        4: "eMail",
+                        13: "Malware MD5",
+                        14: "Malware SHA1",
+                        29: "String"
+                        }
+                artString  = "<b>Artifacts</b><br/>"
+                artString += "".join(["<b>{}:</b>&nbsp;&nbsp;{}<br/>".format(artCodes[int(aid)],avalue) for avalue, aid in incident['__artifacts'].items()])
+                artString += "<br/>"
+                return artString
+        except Exception as err:
+            self.log.warn(err)
+            raise Exception("Encountered issues when processing artifacts: {}".format(err))
+
+    def processSpunkTable(self, incident):
+        '''
+            Incident splunk table process
+            Takes incident, returns HTML formatted table of Splunk output, otherwise raises exception
+        '''
+        try:
+            #Create HTML based table w/o table elements compatible with Resilient
+            # - A bit hackish, but it works
+            tabledata  = incident['__events']
+            headers    = tabledata[0].keys()
+
+            #Determing output by output option set in config file True-> Horizontal / False-> Vertical
+            if self.splunktablelayout:
+                #Construct Horizontal Table
+                # - Table Variables
+                output = "<br/><b>Splunk Results Table</b><br/><div style='display: table;border-top: 1px solid black;border-left: 1px solid black;'>"
+                tblrow = "<div style='display: table-row-group;'>{}</div>"
+                #Cell Style
+                # Args for Template, additional sytle details, cell contents
+                tblcll = "<div style='display: table-cell;font-weight:light;text-align:center;color: black;border-right: 1px solid black;border-bottom: 1px solid black;{}'>{}</div>"
+
+                # - Construct the Table header
+                tmpout = ""
+                # - Set cell style
+                style  = "font-weight:bold;font-size:90%;color: black;background-color: #6ca146;padding: 8px;"
+                for xheadr in headers:
+                    tcell  = tblcll.format(style, '{}')
+                    tmpout += tcell.format(xheadr)
+                output += tblrow.format(tmpout)
+
+                # - Construct the Table rows
+                cntr = 2
+                for event in tabledata:
+                    tmpout = ""
+                    # - Set cell style
+                    if cntr % 2 == 0:
+                        style = "font-size:85%;color: black;background-color: #f2f2f2;padding: 5px;"
+                        tcell = tblcll.format(style, '{}')
+                    else:
+                        style = "font-size:85%;color: black;background-color: #d9d9d9;padding: 5px;"
+                        tcell = tblcll.format(style, '{}')
+
+                    for cell in event.values():
+                        tmpout += tcell.format(cell)
+                    output += tblrow.format(tmpout)
+                    cntr += 1
+
+                # - End of Table
+                output += "</div>"
+
+            else:
+                #Construct Vertical Table
+                # - Table Variables
+                output = "<br/><b>Splunk Results Table</b><br/><div style='display: table;border-top: 1px solid black;border-left: 1px solid black;'>"
+                tblrow = "<div style='display: table-row-group;'>{}</div>"
+                #Cell Style
+                # Args for Template, additional sytle details, cell contents
+                tblcll  = "<div style='display: table-cell;border-right: 1px solid black;border-bottom: 1px solid black;{}'>{}</div>"
+
+                cntr = 2
+                for event in tabledata:
+                    
+                    # - Color code groups for easier reading
+                    if cntr % 2 == 0:
+                        vstyle  = "font-size:85%;background-color: #d9d9d9;text-align:center;font-weight:light;padding:2px;"
+                        vcell   = tblcll.format(vstyle, '{}')
+                        kstyle  = "font-size:90%;text-align:left;color: black;background-color: #6ca146;font-weight:bold;padding-left: 5px; padding-right: 10px;"
+                        kcell   = tblcll.format(kstyle, '{}')
+                    else:
+                        vstyle  = "font-size:85%;background-color: #f2f2f2;text-align:center;font-weight:light;padding: 2px;"
+                        vcell   = tblcll.format(vstyle, '{}')
+                        kstyle  = "font-size:90%;text-align:left;color: black;background-color: #86b960;font-weight:bold;padding-left: 5px; padding-right: 10px;"
+                        kcell   = tblcll.format(kstyle, '{}')
+                    # 
+                    # - Build out vertical table
+                    for k, v in event.items():
+                        tmpout = ""
+                        # - Write the Kvalue
+                        tmpout += kcell.format(k)
+                        # - Write the Vvalue
+                        tmpout += vcell.format(v)
+                        # - Add it to a row group, then to output, cont
+                        output += tblrow.format(tmpout)
+
+                    cntr += 1
+
+                else:
+                    # - End of Table
+                    output += "</div>"
+
+            return output
+        except Exception as err:
+            self.log.warn(err)
+            raise Exception("Encountered issues when processing splunk table: {}".format(err))
+
+    def processQuery(self, incident):
+        '''
+            Incident splunk query process
+            Takes incident, returns HTML formatted query otherwise raises exception
+        '''
+        try:
+            #Some symbols will need to be replaced
+            repsyms = {'<': '&lt;', '>':'&gt;'}
+            query   = incident['__query']
+            outText = "<b>Splunk Query</b><br/>"
+
+            #Decide how we want to process the Splunk query
+            # - True (Break on Newline chars) / False (Break on Pipe chars)
+            if self.splunkquerybreak:
+                #Clean up the Query Output, break on Newline Char
+                cnt = len(query.split("\n"))
+                for item in query.split("\n"):
+                    #HTML escaping fix for symbols listed in repsym dict
+                    for ritem in repsyms.items():
+                        if ritem[0] in item:
+                            item = item.replace(ritem[0], ritem[1])
+
+                    cnt-=1
+                    outText +=item+"<br/>" if cnt != 0 else item
+                else:
+                    outText +="<br/>"
+
+            else:
+                #Clean up the Query Output, break on the pipe |
+                cnt = len(query.split("|"))
+                for item in query.split("|"):
+                    item = item.strip()
+                    #HTML escaping fix for symbols listed in repsym dict
+                    for ritem in repsyms.items():
+                        if ritem[0] in item:
+                            item = item.replace(ritem[0], ritem[1])
+                    cnt-=1
+                    outText +=item+"<br/>|" if cnt != 0 else item
+                else:
+                    outText +="<br/>"
+
+            return outText
+        except Exception as err:
+            self.log.warn(err)
+            raise Exception("Encountered issues when processing splunk query: {}".format(err))
 
 class TLSHttpAdapter(HTTPAdapter):
     """
