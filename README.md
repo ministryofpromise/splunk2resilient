@@ -1,7 +1,7 @@
 Splunk2Resilient
 ================
 
-### Version 0.7.0
+### Version 0.7.1
 
 Splunk2Resilient is used to process Splunk alerts into Resilient tickets.
 

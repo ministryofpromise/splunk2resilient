@@ -1,7 +1,7 @@
 #!/usr/bin/python
 #Splunk alert script to generate Resilient events
 __maintainer__  = '{Ministry of Promise}'
-__version__     = 'Beta 0.7.0'
+__version__     = 'Beta 0.7.1'
 
 try:
     import sys, os
@@ -812,8 +812,8 @@ class EventPusher:
         try:
             #Create HTML based table w/o table elements compatible with Resilient
             # - A bit hackish, but it works
-            tabledata  = incident['__events']
-            headers    = tabledata[0].keys()
+            tabledata       = incident['__events']
+            headers         = sorted(tabledata[0].keys())
 
             #Determing output by output option set in config file True-> Horizontal / False-> Vertical
             if self.splunktablelayout:
@@ -846,8 +846,10 @@ class EventPusher:
                         style = "border: 1px solid black;color: black;background-color: #d9d9d9;"
                         tcell = tblcll.format(style, '{}')
 
-                    for cell in event.values():
-                        tmpout += tcell.format(cell)
+                    for hdrValue in headers:
+                        evdat   = event[hdrValue]
+                        tmpout += tcell.format(evdat)
+                    
                     output += tblrow.format(tmpout)
                     cntr += 1
 
@@ -970,7 +972,7 @@ class EventPusher:
             #Create HTML based table w/o table elements compatible with Resilient
             # - A bit hackish, but it works
             tabledata  = incident['__events']
-            headers    = tabledata[0].keys()
+            headers    = sorted(tabledata[0].keys())
 
             #Determing output by output option set in config file True-> Horizontal / False-> Vertical
             if self.splunktablelayout:
@@ -1003,8 +1005,10 @@ class EventPusher:
                         style = "font-size:85%;color: black;background-color: #d9d9d9;padding: 5px;"
                         tcell = tblcll.format(style, '{}')
 
-                    for cell in event.values():
-                        tmpout += tcell.format(cell)
+                    for hdrValue in headers:
+                        evdat   = event[hdrValue]
+                        tmpout += tcell.format(evdat)
+
                     output += tblrow.format(tmpout)
                     cntr += 1
 
