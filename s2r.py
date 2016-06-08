@@ -250,7 +250,7 @@ class EventParser:
                     newcontainer['__artifacts'].update(artifacts)
 
                     #Calculate and add eHash value to event
-                    # - See if event has atrtifacts, if so do -> sorted(artifacts, query, alertname)
+                    # - See if event has artifacts, if so do -> sorted(artifacts, query, alertname)
                     # - Else use results, query, alertname
                     if artifacts:
                         artjoin =  ''.join([str(x)+str(y) for x,y in sorted(artifacts.items())])
